@@ -57,6 +57,10 @@ class VKMusicPlayer(QMainWindow):
                 background-color: #2a2a4a;
                 color: #666;
             }
+            QPushButton.active {
+                background-color: #4ecdc4;
+                color: #1a1a2e;
+            }
             QLineEdit, QTextEdit {
                 background-color: #16213e;
                 color: white;
@@ -130,6 +134,7 @@ class VKMusicPlayer(QMainWindow):
         self.is_playing = False
         self.token = None
         self.playlists = []
+        self.recommendations = []
         self.current_playlist_id = None
         self.playlist_type = "my"
         self.debug_mode = True
@@ -197,6 +202,11 @@ class VKMusicPlayer(QMainWindow):
         # Вкладки
         self.tabs = QTabWidget()
         
+        # Вкладка "Рекомендации" (НОВАЯ)
+        self.recommendations_tab = QWidget()
+        self.init_recommendations_tab()
+        self.tabs.addTab(self.recommendations_tab, "🔥 Рекомендации")
+        
         # Вкладка "Моя музыка"
         self.my_music_tab = QWidget()
         self.init_my_music_tab()
@@ -253,6 +263,50 @@ class VKMusicPlayer(QMainWindow):
         self.track_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.track_info.setStyleSheet("font-size: 16px; color: #a8a8b8; padding: 10px;")
         main_layout.addWidget(self.track_info)
+    
+    def init_recommendations_tab(self):
+        """Вкладка с рекомендациями (Собрано алгоритмами)"""
+        layout = QVBoxLayout(self.recommendations_tab)
+        
+        header = QLabel("🔥 Собрано алгоритмами")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #4ecdc4; padding: 10px;")
+        layout.addWidget(header)
+        
+        # Кнопки для быстрого доступа к рекомендациям
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        
+        self.recommendations_btns = {}
+        recommendation_types = [
+            ("Для вас", "for_you"),
+            ("Открытия", "discoveries"),
+            ("Новинки", "new"),
+            ("Плейлист дня 1", "day1"),
+            ("Плейлист дня 2", "day2"),
+            ("Плейлист дня 3", "day3"),
+            ("Плейлист дня 4", "day4"),
+            ("Плейлист дня 5", "day5")
+        ]
+        
+        for label, key in recommendation_types:
+            btn = QPushButton(label)
+            btn.setProperty("type", key)
+            btn.clicked.connect(lambda checked, k=key: self.load_recommendations(k))
+            btn.setEnabled(False)
+            self.recommendations_btns[key] = btn
+            btn_layout.addWidget(btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Список рекомендаций
+        self.recommendations_list = QListWidget()
+        self.recommendations_list.itemDoubleClicked.connect(self.play_selected_from_recommendations)
+        layout.addWidget(self.recommendations_list)
+        
+        # Информация о загрузке
+        self.recommendations_count_label = QLabel("Выберите категорию рекомендаций")
+        self.recommendations_count_label.setStyleSheet("color: #a8a8b8; padding: 5px;")
+        layout.addWidget(self.recommendations_count_label)
     
     def init_my_music_tab(self):
         layout = QVBoxLayout(self.my_music_tab)
@@ -334,27 +388,20 @@ class VKMusicPlayer(QMainWindow):
     
     def extract_token_from_url(self, text):
         """Извлекает токен из полного URL или просто текста"""
-        # Проверяем, есть ли в тексте access_token=
         if 'access_token=' not in text:
             return None
         
-        # Пытаемся извлечь токен с помощью регулярного выражения
-        # Ищем access_token= за которым следует строка до & или конца строки
         match = re.search(r'access_token=([^&\s]+)', text)
         if match:
             return match.group(1)
         
-        # Альтернативный метод через parse_qs (если есть полный URL)
         try:
-            # Если текст начинается с http, это URL
             if text.startswith('http'):
                 parsed = urlparse(text)
-                # Для URL с fragment (#)
                 if parsed.fragment:
                     fragment_params = parse_qs(parsed.fragment)
                     if 'access_token' in fragment_params:
                         return fragment_params['access_token'][0]
-                # Для URL с query string (?)
                 if parsed.query:
                     query_params = parse_qs(parsed.query)
                     if 'access_token' in query_params:
@@ -420,6 +467,10 @@ class VKMusicPlayer(QMainWindow):
                 self.login_btn.setText("Выйти")
                 self.load_all_btn.setEnabled(True)
                 self.load_btn.setEnabled(True)
+                
+                # Включаем кнопки рекомендаций
+                for btn in self.recommendations_btns.values():
+                    btn.setEnabled(True)
                 
                 self.load_all_tracks()
                 self.load_playlists_list()
@@ -487,7 +538,6 @@ class VKMusicPlayer(QMainWindow):
         info_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #4ecdc4;")
         layout.addWidget(info_label)
         
-        # Поле для ввода URL или токена
         input_label = QLabel("Вставьте сюда полный URL из адресной строки:")
         input_label.setStyleSheet("color: #a8a8b8; margin-top: 10px;")
         layout.addWidget(input_label)
@@ -502,12 +552,10 @@ class VKMusicPlayer(QMainWindow):
         self.token_input.setMaximumHeight(120)
         layout.addWidget(self.token_input)
         
-        # Кнопка для автоматического извлечения токена
         extract_btn = QPushButton("🔍 Извлечь токен из URL")
         extract_btn.clicked.connect(self.extract_token_from_input)
         layout.addWidget(extract_btn)
         
-        # Поле для отображения извлеченного токена
         extract_label = QLabel("Извлеченный токен:")
         extract_label.setStyleSheet("color: #a8a8b8; margin-top: 10px;")
         layout.addWidget(extract_label)
@@ -534,7 +582,6 @@ class VKMusicPlayer(QMainWindow):
         instruction.setStyleSheet("color: #a8a8b8; font-size: 12px; padding: 10px; background-color: #16213e; border-radius: 5px;")
         layout.addWidget(instruction)
         
-        # Поле для отладки
         debug_label = QLabel("🔍 Отладочная информация:")
         debug_label.setStyleSheet("color: #a8a8b8; font-size: 12px; margin-top: 10px;")
         layout.addWidget(debug_label)
@@ -567,7 +614,6 @@ class VKMusicPlayer(QMainWindow):
         
         self.debug_text.append(f"📝 Получен текст: {text[:50]}...")
         
-        # Пытаемся извлечь токен
         token = self.extract_token_from_url(text)
         
         if token:
@@ -607,10 +653,8 @@ class VKMusicPlayer(QMainWindow):
     
     def process_token_input(self, dialog):
         """Обработка введенного токена"""
-        # Сначала проверяем, есть ли извлеченный токен
         token = self.extracted_token_display.toPlainText().strip()
         
-        # Если нет, пробуем извлечь из основного поля
         if not token:
             text = self.token_input.toPlainText().strip()
             if text:
@@ -619,11 +663,10 @@ class VKMusicPlayer(QMainWindow):
                     self.extracted_token_display.setText(token)
                     self.debug_text.append(f"✅ Автоматически извлечен токен из URL")
                 else:
-                    # Возможно, пользователь ввел просто токен
                     if text.startswith('vk1.a.') and len(text) > 50:
                         token = text
                     else:
-                        self.debug_text.append("❌ Не удалось найти токен во введенном тексте")
+                        self.debug_text.append("❌ Не удалось найти токен")
                         QMessageBox.warning(self, "Ошибка", 
                             "Не удалось найти токен.\n\n"
                             "Убедитесь, что вы ввели правильный URL или токен.")
@@ -640,8 +683,7 @@ class VKMusicPlayer(QMainWindow):
         if not token.startswith('vk1.a.'):
             self.debug_text.append("⚠️ Токен не начинается с 'vk1.a.'")
             QMessageBox.warning(self, "Неверный формат", 
-                "Токен должен начинаться с 'vk1.a.'\n"
-                "Убедитесь, что вы скопировали правильную часть.")
+                "Токен должен начинаться с 'vk1.a.'")
             return
         
         self.token = token
@@ -667,6 +709,11 @@ class VKMusicPlayer(QMainWindow):
                 self.login_btn.setText("Выйти")
                 self.load_all_btn.setEnabled(True)
                 self.load_btn.setEnabled(True)
+                
+                # Включаем кнопки рекомендаций
+                for btn in self.recommendations_btns.values():
+                    btn.setEnabled(True)
+                
                 dialog.accept()
                 
                 self.load_all_tracks()
@@ -691,6 +738,166 @@ class VKMusicPlayer(QMainWindow):
         except Exception as e:
             self.debug_text.append(f"❌ Неизвестная ошибка: {e}")
             QMessageBox.critical(self, "Ошибка", f"Ошибка:\n{str(e)[:300]}")
+    
+    def load_recommendations(self, rec_type):
+        """Загрузка рекомендаций (Собрано алгоритмами)"""
+        if not self.vk_api:
+            QMessageBox.warning(self, "Ошибка", "Сначала авторизуйтесь в VK")
+            return
+        
+        try:
+            self.recommendations_list.clear()
+            self.current_playlist = []
+            self.playlist_type = "recommendations"
+            
+            self.log_message(f"Загрузка рекомендаций типа: {rec_type}")
+            self.recommendations_count_label.setText("Загрузка рекомендаций...")
+            
+            # Маппинг типов рекомендаций на параметры для API
+            rec_params = {
+                "for_you": {"section": "for_you"},
+                "discoveries": {"section": "discoveries"},
+                "new": {"section": "new"},
+                "day1": {"section": "day", "day": 1},
+                "day2": {"section": "day", "day": 2},
+                "day3": {"section": "day", "day": 3},
+                "day4": {"section": "day", "day": 4},
+                "day5": {"section": "day", "day": 5}
+            }
+            
+            params = rec_params.get(rec_type, {})
+            
+            # Пробуем получить рекомендации через audio.getRecommendations
+            try:
+                self.log_message("Попытка получить рекомендации через audio.getRecommendations...")
+                
+                # Разные варианты параметров
+                if rec_type.startswith('day'):
+                    day_num = int(rec_type.replace('day', ''))
+                    recommendations = self.vk_api.audio.getRecommendations(
+                        section='day',
+                        day=day_num,
+                        count=100
+                    )
+                else:
+                    recommendations = self.vk_api.audio.getRecommendations(
+                        section=params.get('section'),
+                        count=100
+                    )
+                
+                items = recommendations.get('items', [])
+                self.log_message(f"Получено {len(items)} рекомендаций")
+                
+                if items:
+                    self._add_tracks_to_recommendations(items)
+                    self.log_message(f"✅ Загружено {len(self.current_playlist)} треков через getRecommendations")
+            except Exception as e:
+                self.log_message(f"Метод getRecommendations не сработал: {e}")
+            
+            # Альтернативный метод: пробуем через search
+            if len(self.current_playlist) == 0:
+                try:
+                    self.log_message("Попытка получить рекомендации через поиск...")
+                    
+                    # Пробуем разные варианты поисковых запросов
+                    search_queries = {
+                        "for_you": "для вас",
+                        "discoveries": "открытия",
+                        "new": "новинки",
+                        "day": "плейлист дня"
+                    }
+                    
+                    query = search_queries.get(rec_type, "")
+                    if rec_type.startswith('day'):
+                        query = f"{search_queries['day']} {rec_type.replace('day', '')}"
+                    
+                    if query:
+                        result = self.vk_api.audio.search(q=query, count=100)
+                        items = result.get('items', [])
+                        self.log_message(f"Получено {len(items)} треков через поиск")
+                        
+                        if items:
+                            self._add_tracks_to_recommendations(items)
+                            self.log_message(f"✅ Загружено {len(self.current_playlist)} треков через поиск")
+                except Exception as e:
+                    self.log_message(f"Метод поиска не сработал: {e}")
+            
+            # Обновляем информацию
+            track_count = len(self.current_playlist)
+            type_names = {
+                "for_you": "Для вас",
+                "discoveries": "Открытия",
+                "new": "Новинки",
+                "day1": "Плейлист дня 1",
+                "day2": "Плейлист дня 2",
+                "day3": "Плейлист дня 3",
+                "day4": "Плейлист дня 4",
+                "day5": "Плейлист дня 5"
+            }
+            
+            self.recommendations_count_label.setText(
+                f"{type_names.get(rec_type, rec_type)}: {track_count} треков"
+            )
+            self.status_label.setText(f"Загружено рекомендаций: {track_count}")
+            
+            if track_count == 0:
+                self.recommendations_list.addItem("❌ Не удалось загрузить рекомендации")
+                self.recommendations_list.addItem("💡 Попробуйте другую категорию")
+                self.recommendations_count_label.setText(
+                    f"{type_names.get(rec_type, rec_type)}: не удалось загрузить"
+                )
+                self.log_message("Не удалось загрузить рекомендации")
+            
+        except Exception as e:
+            self.log_message(f"Ошибка загрузки рекомендаций: {e}")
+            self.recommendations_list.addItem(f"❌ Ошибка: {str(e)[:100]}")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить рекомендации: {str(e)}")
+    
+    def _add_tracks_to_recommendations(self, items):
+        """Вспомогательный метод для добавления треков в рекомендации"""
+        for track in items:
+            title = track.get('title', '')
+            artist = track.get('artist', '')
+            url = track.get('url', '')
+            duration = track.get('duration', 0)
+            track_id = track.get('id', 0)
+            
+            # Если это вложенная структура
+            if not title and 'track' in track:
+                track_data = track['track']
+                title = track_data.get('title', '')
+                artist = track_data.get('artist', '')
+                url = track_data.get('url', '')
+                duration = track_data.get('duration', 0)
+                track_id = track_data.get('id', 0)
+            
+            # Если трек в формате аудиозаписи
+            elif not title and 'audio' in track:
+                track_data = track['audio']
+                title = track_data.get('title', '')
+                artist = track_data.get('artist', '')
+                url = track_data.get('url', '')
+                duration = track_data.get('duration', 0)
+                track_id = track_data.get('id', 0)
+            
+            if title and artist and url:
+                track_info = {
+                    'title': title,
+                    'artist': artist,
+                    'duration': duration,
+                    'url': url,
+                    'id': track_id
+                }
+                self.current_playlist.append(track_info)
+                
+                duration_str = self.format_duration(duration)
+                display_text = f"{artist} - {title} [{duration_str}]"
+                self.recommendations_list.addItem(display_text)
+                self.log_message(f"Добавлен трек: {artist} - {title}")
+    
+    def play_selected_from_recommendations(self, item):
+        """Воспроизведение выбранного трека из рекомендаций"""
+        self.play_selected_from_list(item, self.recommendations_list)
     
     def load_all_tracks(self):
         """Загрузка ВСЕХ аудиозаписей пользователя с пагинацией"""
@@ -1046,11 +1253,13 @@ class VKMusicPlayer(QMainWindow):
             self.next_btn.setEnabled(True)
             
             current_tab = self.tabs.currentIndex()
-            if current_tab == 0 and hasattr(self, 'music_list'):
+            if current_tab == 0 and hasattr(self, 'recommendations_list'):
+                self.recommendations_list.setCurrentRow(index)
+            elif current_tab == 1 and hasattr(self, 'music_list'):
                 self.music_list.setCurrentRow(index)
-            elif current_tab == 1 and hasattr(self, 'playlist_tracks_list'):
+            elif current_tab == 2 and hasattr(self, 'playlist_tracks_list'):
                 self.playlist_tracks_list.setCurrentRow(index)
-            elif current_tab == 2 and hasattr(self, 'search_results'):
+            elif current_tab == 3 and hasattr(self, 'search_results'):
                 self.search_results.setCurrentRow(index)
             
             self.timer.start(1000)
@@ -1153,10 +1362,15 @@ class VKMusicPlayer(QMainWindow):
         self.load_all_btn.setEnabled(False)
         self.load_btn.setEnabled(False)
         
+        # Отключаем кнопки рекомендаций
+        for btn in self.recommendations_btns.values():
+            btn.setEnabled(False)
+        
         self.music_list.clear()
         self.playlists_list.clear()
         self.playlist_tracks_list.clear()
         self.search_results.clear()
+        self.recommendations_list.clear()
         
         self.play_btn.setEnabled(False)
         self.prev_btn.setEnabled(False)
@@ -1166,6 +1380,7 @@ class VKMusicPlayer(QMainWindow):
         self.tracks_count_label.setText("Всего треков: 0")
         self.playlist_tracks_label.setText("Выберите плейлист")
         self.search_count_label.setText("Найдено треков: 0")
+        self.recommendations_count_label.setText("Выберите категорию рекомендаций")
         
         try:
             os.remove('vk_token.json')
