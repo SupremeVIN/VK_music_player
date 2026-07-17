@@ -10,6 +10,8 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from datetime import datetime
 import webbrowser
 import time
+import re
+from urllib.parse import urlparse, parse_qs
 
 class VKMusicPlayer(QMainWindow):
     def __init__(self):
@@ -55,13 +57,18 @@ class VKMusicPlayer(QMainWindow):
                 background-color: #2a2a4a;
                 color: #666;
             }
-            QLineEdit {
+            QLineEdit, QTextEdit {
                 background-color: #16213e;
                 color: white;
                 border: 1px solid #0f3460;
                 border-radius: 5px;
                 padding: 10px;
                 font-size: 14px;
+            }
+            QTextEdit {
+                font-family: monospace;
+                font-size: 12px;
+                color: #a8a8b8;
             }
             QLabel {
                 color: #ffffff;
@@ -95,14 +102,6 @@ class VKMusicPlayer(QMainWindow):
             }
             QTabBar::tab:hover {
                 background-color: #1a2a4a;
-            }
-            QTextEdit {
-                background-color: #16213e;
-                color: #a8a8b8;
-                border: 1px solid #0f3460;
-                border-radius: 5px;
-                font-family: monospace;
-                font-size: 12px;
             }
             QScrollBar:vertical {
                 background-color: #16213e;
@@ -333,6 +332,38 @@ class VKMusicPlayer(QMainWindow):
         self.search_count_label.setStyleSheet("color: #a8a8b8; padding: 5px;")
         layout.addWidget(self.search_count_label)
     
+    def extract_token_from_url(self, text):
+        """Извлекает токен из полного URL или просто текста"""
+        # Проверяем, есть ли в тексте access_token=
+        if 'access_token=' not in text:
+            return None
+        
+        # Пытаемся извлечь токен с помощью регулярного выражения
+        # Ищем access_token= за которым следует строка до & или конца строки
+        match = re.search(r'access_token=([^&\s]+)', text)
+        if match:
+            return match.group(1)
+        
+        # Альтернативный метод через parse_qs (если есть полный URL)
+        try:
+            # Если текст начинается с http, это URL
+            if text.startswith('http'):
+                parsed = urlparse(text)
+                # Для URL с fragment (#)
+                if parsed.fragment:
+                    fragment_params = parse_qs(parsed.fragment)
+                    if 'access_token' in fragment_params:
+                        return fragment_params['access_token'][0]
+                # Для URL с query string (?)
+                if parsed.query:
+                    query_params = parse_qs(parsed.query)
+                    if 'access_token' in query_params:
+                        return query_params['access_token'][0]
+        except:
+            pass
+        
+        return None
+    
     def load_token(self):
         """Загрузка сохраненного токена"""
         try:
@@ -414,14 +445,14 @@ class VKMusicPlayer(QMainWindow):
             return False
     
     def login_vk(self):
-        """Авторизация через VK"""
+        """Авторизация через VK с автоматическим извлечением токена"""
         if self.token and self.vk_session:
             self.logout()
             return
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Авторизация в VK")
-        dialog.setFixedSize(600, 450)
+        dialog.setFixedSize(700, 550)
         dialog.setStyleSheet("""
             QDialog { background-color: #1a1a2e; }
             QLabel { color: white; font-size: 14px; }
@@ -435,7 +466,7 @@ class VKMusicPlayer(QMainWindow):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #1a4a7a; }
-            QLineEdit {
+            QLineEdit, QTextEdit {
                 background-color: #16213e;
                 color: white;
                 border: 1px solid #0f3460;
@@ -444,28 +475,48 @@ class VKMusicPlayer(QMainWindow):
                 font-size: 14px;
             }
             QTextEdit {
-                background-color: #16213e;
-                color: #a8a8b8;
-                border: 1px solid #0f3460;
-                border-radius: 5px;
                 font-family: monospace;
                 font-size: 12px;
+                color: #a8a8b8;
             }
         """)
         
         layout = QVBoxLayout(dialog)
         
-        info_label = QLabel("🔑 Введите токен доступа VK")
+        info_label = QLabel("🔑 Введите полный URL с токеном или сам токен")
         info_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #4ecdc4;")
         layout.addWidget(info_label)
         
-        warning_label = QLabel("⚠️ ВАЖНО: Токен должен быть получен на этом же компьютере!")
-        warning_label.setStyleSheet("color: #ff6b6b; font-weight: bold; padding: 5px; background-color: #2a1a1a; border-radius: 5px;")
-        layout.addWidget(warning_label)
+        # Поле для ввода URL или токена
+        input_label = QLabel("Вставьте сюда полный URL из адресной строки:")
+        input_label.setStyleSheet("color: #a8a8b8; margin-top: 10px;")
+        layout.addWidget(input_label)
         
-        token_input = QLineEdit()
-        token_input.setPlaceholderText("Вставьте токен сюда...")
-        layout.addWidget(token_input)
+        self.token_input = QTextEdit()
+        self.token_input.setPlaceholderText(
+            "Вставьте URL целиком, например:\n"
+            "https://oauth.vk.com/blank.html#access_token=vk1.a.xxxxx...&expires_in=86400&user_id=123\n\n"
+            "Или просто токен:\n"
+            "vk1.a.xxxxx..."
+        )
+        self.token_input.setMaximumHeight(120)
+        layout.addWidget(self.token_input)
+        
+        # Кнопка для автоматического извлечения токена
+        extract_btn = QPushButton("🔍 Извлечь токен из URL")
+        extract_btn.clicked.connect(self.extract_token_from_input)
+        layout.addWidget(extract_btn)
+        
+        # Поле для отображения извлеченного токена
+        extract_label = QLabel("Извлеченный токен:")
+        extract_label.setStyleSheet("color: #a8a8b8; margin-top: 10px;")
+        layout.addWidget(extract_label)
+        
+        self.extracted_token_display = QTextEdit()
+        self.extracted_token_display.setPlaceholderText("Здесь появится извлеченный токен...")
+        self.extracted_token_display.setMaximumHeight(60)
+        self.extracted_token_display.setReadOnly(True)
+        layout.addWidget(self.extracted_token_display)
         
         get_token_btn = QPushButton("🌐 Получить токен в браузере")
         get_token_btn.clicked.connect(lambda: self.get_token_in_browser(dialog))
@@ -473,24 +524,26 @@ class VKMusicPlayer(QMainWindow):
         
         instruction = QLabel(
             "📋 Инструкция:\n"
-            "1. Нажмите кнопку для получения токена\n"
+            "1. Нажмите кнопку для получения токена в браузере\n"
             "2. Войдите в VK и разрешите доступ\n"
-            "3. Скопируйте токен из адресной строки\n"
-            "4. Вставьте его в поле и нажмите 'Войти'\n\n"
+            "3. Скопируйте ВЕСЬ URL из адресной строки\n"
+            "4. Вставьте его в поле выше и нажмите 'Извлечь токен'\n"
+            "5. Или просто вставьте токен и нажмите 'Войти'\n\n"
             "⚠️ Токен привязывается к вашему IP!"
         )
         instruction.setStyleSheet("color: #a8a8b8; font-size: 12px; padding: 10px; background-color: #16213e; border-radius: 5px;")
         layout.addWidget(instruction)
         
+        # Поле для отладки
         debug_label = QLabel("🔍 Отладочная информация:")
         debug_label.setStyleSheet("color: #a8a8b8; font-size: 12px; margin-top: 10px;")
         layout.addWidget(debug_label)
         
-        debug_text = QTextEdit()
-        debug_text.setMaximumHeight(100)
-        debug_text.setReadOnly(True)
-        debug_text.setPlainText("Готов к авторизации...")
-        layout.addWidget(debug_text)
+        self.debug_text = QTextEdit()
+        self.debug_text.setMaximumHeight(80)
+        self.debug_text.setReadOnly(True)
+        self.debug_text.setPlainText("Готов к авторизации...")
+        layout.addWidget(self.debug_text)
         
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton("Отмена")
@@ -498,11 +551,40 @@ class VKMusicPlayer(QMainWindow):
         btn_layout.addWidget(cancel_btn)
         
         login_btn = QPushButton("✅ Войти")
-        login_btn.clicked.connect(lambda: self.process_token_input(token_input.text(), dialog, debug_text))
+        login_btn.clicked.connect(lambda: self.process_token_input(dialog))
         btn_layout.addWidget(login_btn)
         
         layout.addLayout(btn_layout)
         dialog.exec()
+    
+    def extract_token_from_input(self):
+        """Извлекает токен из введенного текста"""
+        text = self.token_input.toPlainText().strip()
+        if not text:
+            self.debug_text.append("❌ Введите URL или токен")
+            QMessageBox.warning(self, "Ошибка", "Введите URL или токен")
+            return
+        
+        self.debug_text.append(f"📝 Получен текст: {text[:50]}...")
+        
+        # Пытаемся извлечь токен
+        token = self.extract_token_from_url(text)
+        
+        if token:
+            self.debug_text.append(f"✅ Токен извлечен: {token[:30]}...")
+            self.extracted_token_display.setText(token)
+            QMessageBox.information(self, "Успех", 
+                "✅ Токен успешно извлечен!\n\n"
+                f"Токен: {token[:30]}...\n\n"
+                "Нажмите 'Войти' для авторизации.")
+        else:
+            self.debug_text.append("❌ Не удалось извлечь токен")
+            QMessageBox.warning(self, "Ошибка", 
+                "Не удалось извлечь токен.\n\n"
+                "Убедитесь, что:\n"
+                "1. Вы скопировали полный URL\n"
+                "2. В URL есть access_token=\n"
+                "3. Или введите токен вручную")
     
     def get_token_in_browser(self, dialog):
         """Открывает страницу для получения токена"""
@@ -516,43 +598,67 @@ class VKMusicPlayer(QMainWindow):
             "Инструкция по получению токена",
             "1. В браузере откроется страница VK\n"
             "2. Нажмите 'Разрешить'\n"
-            "3. Из адресной строки скопируйте часть после 'access_token='\n"
-            "   (до '&expires_in')\n"
-            "4. Вставьте скопированный токен в поле\n\n"
+            "3. Скопируйте ВЕСЬ URL из адресной строки\n"
+            "4. Вставьте его в поле и нажмите 'Извлечь токен'\n"
+            "5. Или вручную скопируйте часть после 'access_token='\n"
+            "   (до '&expires_in')\n\n"
             "⚠️ ВАЖНО: Токен будет привязан к текущему IP!"
         )
     
-    def process_token_input(self, token, dialog, debug_text):
+    def process_token_input(self, dialog):
         """Обработка введенного токена"""
+        # Сначала проверяем, есть ли извлеченный токен
+        token = self.extracted_token_display.toPlainText().strip()
+        
+        # Если нет, пробуем извлечь из основного поля
         if not token:
-            debug_text.append("❌ Ошибка: токен не введен")
+            text = self.token_input.toPlainText().strip()
+            if text:
+                token = self.extract_token_from_url(text)
+                if token:
+                    self.extracted_token_display.setText(token)
+                    self.debug_text.append(f"✅ Автоматически извлечен токен из URL")
+                else:
+                    # Возможно, пользователь ввел просто токен
+                    if text.startswith('vk1.a.') and len(text) > 50:
+                        token = text
+                    else:
+                        self.debug_text.append("❌ Не удалось найти токен во введенном тексте")
+                        QMessageBox.warning(self, "Ошибка", 
+                            "Не удалось найти токен.\n\n"
+                            "Убедитесь, что вы ввели правильный URL или токен.")
+                        return
+        
+        if not token:
+            self.debug_text.append("❌ Ошибка: токен не введен")
             QMessageBox.warning(self, "Ошибка", "Введите токен доступа")
             return
         
-        debug_text.append(f"📝 Получен токен: {token[:30]}...")
-        debug_text.append(f"📏 Длина токена: {len(token)} символов")
+        self.debug_text.append(f"📝 Токен для входа: {token[:30]}...")
+        self.debug_text.append(f"📏 Длина токена: {len(token)} символов")
         
         if not token.startswith('vk1.a.'):
-            debug_text.append("⚠️ Токен не начинается с 'vk1.a.'")
+            self.debug_text.append("⚠️ Токен не начинается с 'vk1.a.'")
             QMessageBox.warning(self, "Неверный формат", 
-                "Токен должен начинаться с 'vk1.a.'")
+                "Токен должен начинаться с 'vk1.a.'\n"
+                "Убедитесь, что вы скопировали правильную часть.")
             return
         
         self.token = token
         
         try:
-            debug_text.append("🔄 Создание сессии VK...")
+            self.debug_text.append("🔄 Создание сессии VK...")
             self.vk_session = vk_api.VkApi(token=token)
             self.vk_api = self.vk_session.get_api()
-            debug_text.append("✅ Сессия создана")
+            self.debug_text.append("✅ Сессия создана")
             
-            debug_text.append("🔄 Проверка токена...")
+            self.debug_text.append("🔄 Проверка токена...")
             user_info = self.vk_api.users.get()
             
             if user_info and len(user_info) > 0:
                 user_name = f"{user_info[0]['first_name']} {user_info[0]['last_name']}"
                 self.user_id = user_info[0]['id']
-                debug_text.append(f"✅ Авторизация успешна: {user_name} (ID: {self.user_id})")
+                self.debug_text.append(f"✅ Авторизация успешна: {user_name} (ID: {self.user_id})")
                 
                 self.save_token(token, self.user_id)
                 
@@ -568,12 +674,12 @@ class VKMusicPlayer(QMainWindow):
                 
                 QMessageBox.information(self, "Успех", f"Добро пожаловать, {user_name}!")
             else:
-                debug_text.append("❌ Не получены данные пользователя")
+                self.debug_text.append("❌ Не получены данные пользователя")
                 QMessageBox.warning(self, "Ошибка", "Не удалось получить данные пользователя")
                 
         except vk_api.exceptions.ApiError as e:
             error_msg = str(e)
-            debug_text.append(f"❌ API ошибка: {error_msg}")
+            self.debug_text.append(f"❌ API ошибка: {error_msg}")
             
             if "another ip address" in error_msg.lower():
                 QMessageBox.critical(self, "Ошибка IP", 
@@ -583,7 +689,7 @@ class VKMusicPlayer(QMainWindow):
                 QMessageBox.critical(self, "Ошибка API", f"Ошибка:\n{error_msg[:300]}")
                 
         except Exception as e:
-            debug_text.append(f"❌ Неизвестная ошибка: {e}")
+            self.debug_text.append(f"❌ Неизвестная ошибка: {e}")
             QMessageBox.critical(self, "Ошибка", f"Ошибка:\n{str(e)[:300]}")
     
     def load_all_tracks(self):
@@ -703,7 +809,7 @@ class VKMusicPlayer(QMainWindow):
             self.playlists_list.addItem(f"❌ Ошибка загрузки плейлистов")
     
     def load_playlist_tracks(self, item):
-        """Загрузка треков выбранного плейлиста (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
+        """Загрузка треков выбранного плейлиста"""
         index = self.playlists_list.row(item)
         if index < 0 or index >= len(self.playlists):
             return
@@ -717,9 +823,6 @@ class VKMusicPlayer(QMainWindow):
             self.current_playlist_id = playlist['id']
             
             self.log_message(f"Загрузка плейлиста: {playlist['title']} (ID: {playlist['id']}, Owner: {playlist['owner_id']})")
-            
-            # ПРОБЛЕМА: audio.getPlaylistById НЕ ВОЗВРАЩАЕТ треки!
-            # Нужно использовать другой метод: audio.get с параметром playlist_id
             
             # Вариант 1: Пытаемся получить треки через audio.get с playlist_id
             try:
@@ -783,24 +886,21 @@ class VKMusicPlayer(QMainWindow):
             # Вариант 3: Если execute не работает, пробуем через audio.get без playlist_id
             if len(self.current_playlist) == 0:
                 try:
-                    self.log_message("Попытка получить треки через audio.get без playlist_id...")
+                    self.log_message("Попытка получить треки через фильтрацию всех аудиозаписей...")
                     
-                    # Пробуем получить все аудиозаписи пользователя
                     all_tracks = self.vk_api.audio.get(
                         owner_id=self.user_id,
                         count=600
                     )
                     
-                    # Фильтруем по плейлисту (если треки содержат информацию о плейлисте)
                     items = []
                     for track in all_tracks.get('items', []):
                         if 'playlist_id' in track and track['playlist_id'] == playlist['id']:
                             items.append(track)
-                        # Или если есть другой признак принадлежности к плейлисту
                         elif 'playlist' in track and track['playlist'].get('id') == playlist['id']:
                             items.append(track)
                     
-                    self.log_message(f"Найдено {len(items)} треков через фильтрацию всех аудиозаписей")
+                    self.log_message(f"Найдено {len(items)} треков через фильтрацию")
                     
                     if items:
                         self._add_tracks_to_playlist(items)
@@ -827,14 +927,12 @@ class VKMusicPlayer(QMainWindow):
     def _add_tracks_to_playlist(self, items):
         """Вспомогательный метод для добавления треков в плейлист"""
         for track in items:
-            # Пробуем извлечь данные трека из разных структур
             title = track.get('title', '')
             artist = track.get('artist', '')
             url = track.get('url', '')
             duration = track.get('duration', 0)
             track_id = track.get('id', 0)
             
-            # Если это вложенная структура с track
             if not title and 'track' in track:
                 track_data = track['track']
                 title = track_data.get('title', '')
@@ -843,7 +941,6 @@ class VKMusicPlayer(QMainWindow):
                 duration = track_data.get('duration', 0)
                 track_id = track_data.get('id', 0)
             
-            # Если это вложенная структура с audio
             elif not title and 'audio' in track:
                 track_data = track['audio']
                 title = track_data.get('title', '')
@@ -852,7 +949,6 @@ class VKMusicPlayer(QMainWindow):
                 duration = track_data.get('duration', 0)
                 track_id = track_data.get('id', 0)
             
-            # Если есть только данные без обертки
             elif not title and 'title' in track:
                 title = track.get('title', '')
                 artist = track.get('artist', '')
@@ -860,7 +956,6 @@ class VKMusicPlayer(QMainWindow):
                 duration = track.get('duration', 0)
                 track_id = track.get('id', 0)
             
-            # Проверяем, что у нас есть валидные данные
             if title and artist and url:
                 track_info = {
                     'title': title,
