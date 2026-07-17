@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 import requests
 import vk_api
@@ -7,16 +8,14 @@ from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from datetime import datetime
-import threading
-import time
 import webbrowser
-from urllib.parse import urlparse, parse_qs
+import time
 
 class VKMusicPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VK Music Player")
-        self.setGeometry(100, 100, 800, 600)
+        self.setWindowTitle("VK Music Player Pro")
+        self.setGeometry(100, 100, 1000, 700)
         
         # Настройка стиля
         self.setStyleSheet("""
@@ -36,6 +35,9 @@ class VKMusicPlayer(QMainWindow):
             }
             QListWidget::item:selected {
                 background-color: #0f3460;
+            }
+            QListWidget::item:hover {
+                background-color: #1a2a4a;
             }
             QPushButton {
                 background-color: #0f3460;
@@ -73,8 +75,51 @@ class VKMusicPlayer(QMainWindow):
                 text-align: center;
             }
             QProgressBar::chunk {
-                background-color: #0f3460;
+                background-color: #4ecdc4;
                 border-radius: 3px;
+            }
+            QTabWidget::pane {
+                background-color: transparent;
+                border: none;
+            }
+            QTabBar::tab {
+                background-color: #16213e;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px 5px 0 0;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #0f3460;
+            }
+            QTabBar::tab:hover {
+                background-color: #1a2a4a;
+            }
+            QTextEdit {
+                background-color: #16213e;
+                color: #a8a8b8;
+                border: 1px solid #0f3460;
+                border-radius: 5px;
+                font-family: monospace;
+                font-size: 12px;
+            }
+            QScrollBar:vertical {
+                background-color: #16213e;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #0f3460;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #1a4a7a;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
             }
         """)
         
@@ -85,9 +130,16 @@ class VKMusicPlayer(QMainWindow):
         self.current_index = -1
         self.is_playing = False
         self.token = None
+        self.playlists = []
+        self.current_playlist_id = None
+        self.playlist_type = "my"
+        self.debug_mode = True
+        self.user_id = None
+        self.total_tracks_loaded = 0
         
-        # ID приложения VK (можно использовать тестовый)
-        self.app_id = 6287487  # Тестовый ID, замените на свой
+        # ID приложения VK
+        self.app_id = 6287487
+        self.redirect_uri = "https://oauth.vk.com/blank.html"
         
         # Инициализация медиа плеера
         self.player = QMediaPlayer()
@@ -129,31 +181,39 @@ class VKMusicPlayer(QMainWindow):
         
         auth_layout.addStretch()
         
-        # Кнопка обновления
-        self.refresh_btn = QPushButton("Обновить плейлисты")
-        self.refresh_btn.clicked.connect(self.load_playlists)
-        self.refresh_btn.setEnabled(False)
-        auth_layout.addWidget(self.refresh_btn)
+        # Кнопка загрузки
+        self.load_btn = QPushButton("Загрузить еще")
+        self.load_btn.clicked.connect(self.load_more_tracks)
+        self.load_btn.setEnabled(False)
+        auth_layout.addWidget(self.load_btn)
+        
+        # Кнопка отладки
+        self.debug_btn = QPushButton("🐛 Debug")
+        self.debug_btn.clicked.connect(self.show_debug_info)
+        self.debug_btn.setEnabled(True)
+        auth_layout.addWidget(self.debug_btn)
         
         main_layout.addLayout(auth_layout)
         
-        # Поиск
-        search_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Поиск музыки...")
-        self.search_input.returnPressed.connect(self.search_music)
+        # Вкладки
+        self.tabs = QTabWidget()
         
-        self.search_btn = QPushButton("Поиск")
-        self.search_btn.clicked.connect(self.search_music)
+        # Вкладка "Моя музыка"
+        self.my_music_tab = QWidget()
+        self.init_my_music_tab()
+        self.tabs.addTab(self.my_music_tab, "🎵 Моя музыка")
         
-        search_layout.addWidget(self.search_input)
-        search_layout.addWidget(self.search_btn)
-        main_layout.addLayout(search_layout)
+        # Вкладка "Плейлисты"
+        self.playlists_tab = QWidget()
+        self.init_playlists_tab()
+        self.tabs.addTab(self.playlists_tab, "📁 Плейлисты")
         
-        # Список треков
-        self.music_list = QListWidget()
-        self.music_list.itemDoubleClicked.connect(self.play_selected)
-        main_layout.addWidget(self.music_list)
+        # Вкладка "Поиск"
+        self.search_tab = QWidget()
+        self.init_search_tab()
+        self.tabs.addTab(self.search_tab, "🔍 Поиск")
+        
+        main_layout.addWidget(self.tabs)
         
         # Панель управления
         control_layout = QHBoxLayout()
@@ -192,8 +252,86 @@ class VKMusicPlayer(QMainWindow):
         # Информация о текущем треке
         self.track_info = QLabel("Нет выбранного трека")
         self.track_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.track_info.setStyleSheet("font-size: 16px; color: #a8a8b8;")
+        self.track_info.setStyleSheet("font-size: 16px; color: #a8a8b8; padding: 10px;")
         main_layout.addWidget(self.track_info)
+    
+    def init_my_music_tab(self):
+        layout = QVBoxLayout(self.my_music_tab)
+        
+        header = QLabel("Мои аудиозаписи")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #4ecdc4; padding: 10px;")
+        layout.addWidget(header)
+        
+        self.music_list = QListWidget()
+        self.music_list.itemDoubleClicked.connect(self.play_selected)
+        layout.addWidget(self.music_list)
+        
+        btn_layout = QHBoxLayout()
+        self.load_all_btn = QPushButton("Загрузить все треки")
+        self.load_all_btn.clicked.connect(self.load_all_tracks)
+        self.load_all_btn.setEnabled(False)
+        btn_layout.addWidget(self.load_all_btn)
+        
+        self.tracks_count_label = QLabel("Всего треков: 0")
+        self.tracks_count_label.setStyleSheet("color: #a8a8b8;")
+        btn_layout.addWidget(self.tracks_count_label)
+        btn_layout.addStretch()
+        
+        layout.addLayout(btn_layout)
+    
+    def init_playlists_tab(self):
+        layout = QHBoxLayout(self.playlists_tab)
+        
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 10, 0)
+        
+        header = QLabel("Ваши плейлисты")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #4ecdc4;")
+        left_layout.addWidget(header)
+        
+        self.playlists_list = QListWidget()
+        self.playlists_list.itemClicked.connect(self.load_playlist_tracks)
+        self.playlists_list.setMaximumWidth(300)
+        left_layout.addWidget(self.playlists_list)
+        
+        layout.addWidget(left_widget)
+        
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        
+        self.playlist_tracks_label = QLabel("Выберите плейлист")
+        self.playlist_tracks_label.setStyleSheet("font-size: 16px; color: #a8a8b8; padding: 10px;")
+        right_layout.addWidget(self.playlist_tracks_label)
+        
+        self.playlist_tracks_list = QListWidget()
+        self.playlist_tracks_list.itemDoubleClicked.connect(self.play_selected_from_playlist)
+        right_layout.addWidget(self.playlist_tracks_list)
+        
+        layout.addWidget(right_widget, stretch=2)
+    
+    def init_search_tab(self):
+        layout = QVBoxLayout(self.search_tab)
+        
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск музыки...")
+        self.search_input.returnPressed.connect(self.search_music)
+        
+        self.search_btn = QPushButton("Найти")
+        self.search_btn.clicked.connect(self.search_music)
+        
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_btn)
+        layout.addLayout(search_layout)
+        
+        self.search_results = QListWidget()
+        self.search_results.itemDoubleClicked.connect(self.play_selected_from_search)
+        layout.addWidget(self.search_results)
+        
+        self.search_count_label = QLabel("Найдено треков: 0")
+        self.search_count_label.setStyleSheet("color: #a8a8b8; padding: 5px;")
+        layout.addWidget(self.search_count_label)
     
     def load_token(self):
         """Загрузка сохраненного токена"""
@@ -202,75 +340,91 @@ class VKMusicPlayer(QMainWindow):
                 with open('vk_token.json', 'r') as f:
                     data = json.load(f)
                     self.token = data.get('token')
+                    self.user_id = data.get('user_id')
                     if self.token:
-                        self.login_with_token()
-        except:
-            pass
+                        self.log_message(f"Загружен токен: {self.token[:30]}...")
+                        success = self.login_with_token()
+                        if not success:
+                            self.log_message("Токен недействителен")
+                            self.token = None
+                            self.user_id = None
+        except Exception as e:
+            self.log_message(f"Ошибка загрузки токена: {e}")
     
-    def save_token(self, token):
-        """Сохранение токена"""
+    def save_token(self, token, user_id=None):
+        """Сохранение токена и ID пользователя"""
         try:
+            data = {'token': token}
+            if user_id:
+                data['user_id'] = user_id
             with open('vk_token.json', 'w') as f:
-                json.dump({'token': token}, f)
+                json.dump(data, f)
             self.token = token
-        except:
-            pass
+            if user_id:
+                self.user_id = user_id
+            self.log_message(f"Токен сохранен: {token[:30]}...")
+        except Exception as e:
+            self.log_message(f"Ошибка сохранения токена: {e}")
     
     def login_with_token(self):
         """Вход с использованием сохраненного токена"""
         try:
+            self.log_message("Попытка входа с токеном...")
+            
+            if not self.token or len(self.token) < 20:
+                self.log_message("Токен слишком короткий или пустой")
+                return False
+            
             self.vk_session = vk_api.VkApi(token=self.token)
             self.vk_api = self.vk_session.get_api()
             
-            # Проверка токена
+            self.log_message("Проверка токена...")
             user_info = self.vk_api.users.get()
-            if user_info:
+            
+            if user_info and len(user_info) > 0:
+                self.user_id = user_info[0]['id']
+                self.log_message(f"Успешная авторизация: {user_info[0]['first_name']} (ID: {self.user_id})")
                 self.status_label.setText(f"Авторизован: {user_info[0]['first_name']} {user_info[0]['last_name']}")
                 self.status_label.setStyleSheet("color: #4ecdc4;")
                 self.login_btn.setText("Выйти")
-                self.refresh_btn.setEnabled(True)
-                self.load_playlists()
+                self.load_all_btn.setEnabled(True)
+                self.load_btn.setEnabled(True)
+                
+                self.load_all_tracks()
+                self.load_playlists_list()
                 return True
-        except Exception as e:
-            print(f"Ошибка при входе с токеном: {e}")
-            self.token = None
             return False
-        return False
+            
+        except vk_api.exceptions.ApiError as e:
+            error_msg = str(e)
+            self.log_message(f"API ошибка: {error_msg}")
+            
+            if "another ip address" in error_msg.lower():
+                QMessageBox.warning(self, "Ошибка IP", 
+                    "Токен привязан к другому IP-адресу.\n\n"
+                    "Получите новый токен с текущего компьютера.")
+                return False
+            else:
+                QMessageBox.warning(self, "Ошибка API", f"Ошибка при обращении к API VK:\n{error_msg[:300]}")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"Неизвестная ошибка: {e}")
+            QMessageBox.warning(self, "Ошибка", f"Произошла ошибка:\n{str(e)[:300]}")
+            return False
     
     def login_vk(self):
-        """Авторизация через VK с получением токена"""
+        """Авторизация через VK"""
         if self.token and self.vk_session:
-            # Выход
-            self.token = None
-            self.vk_session = None
-            self.vk_api = None
-            self.status_label.setText("Не авторизован")
-            self.status_label.setStyleSheet("color: #ff6b6b;")
-            self.login_btn.setText("Войти в VK")
-            self.refresh_btn.setEnabled(False)
-            self.music_list.clear()
-            self.play_btn.setEnabled(False)
-            self.prev_btn.setEnabled(False)
-            self.next_btn.setEnabled(False)
-            self.track_info.setText("Нет выбранного трека")
-            try:
-                os.remove('vk_token.json')
-            except:
-                pass
+            self.logout()
             return
         
-        # Показываем диалог для получения токена
-        auth_dialog = QDialog(self)
-        auth_dialog.setWindowTitle("Авторизация в VK")
-        auth_dialog.setFixedSize(500, 300)
-        auth_dialog.setStyleSheet("""
-            QDialog {
-                background-color: #1a1a2e;
-            }
-            QLabel {
-                color: white;
-                font-size: 14px;
-            }
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Авторизация в VK")
+        dialog.setFixedSize(600, 450)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #1a1a2e; }
+            QLabel { color: white; font-size: 14px; }
             QPushButton {
                 background-color: #0f3460;
                 color: white;
@@ -280,9 +434,7 @@ class VKMusicPlayer(QMainWindow):
                 font-size: 14px;
                 font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #1a4a7a;
-            }
+            QPushButton:hover { background-color: #1a4a7a; }
             QLineEdit {
                 background-color: #16213e;
                 color: white;
@@ -291,127 +443,438 @@ class VKMusicPlayer(QMainWindow):
                 padding: 10px;
                 font-size: 14px;
             }
+            QTextEdit {
+                background-color: #16213e;
+                color: #a8a8b8;
+                border: 1px solid #0f3460;
+                border-radius: 5px;
+                font-family: monospace;
+                font-size: 12px;
+            }
         """)
         
-        layout = QVBoxLayout(auth_dialog)
+        layout = QVBoxLayout(dialog)
         
-        info_label = QLabel("Для авторизации введите токен доступа VK")
-        info_label.setWordWrap(True)
+        info_label = QLabel("🔑 Введите токен доступа VK")
+        info_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #4ecdc4;")
         layout.addWidget(info_label)
         
-        # Поле для ввода токена
+        warning_label = QLabel("⚠️ ВАЖНО: Токен должен быть получен на этом же компьютере!")
+        warning_label.setStyleSheet("color: #ff6b6b; font-weight: bold; padding: 5px; background-color: #2a1a1a; border-radius: 5px;")
+        layout.addWidget(warning_label)
+        
         token_input = QLineEdit()
         token_input.setPlaceholderText("Вставьте токен сюда...")
         layout.addWidget(token_input)
         
-        # Кнопка для получения токена в браузере
-        get_token_btn = QPushButton("Получить токен в браузере")
-        get_token_btn.clicked.connect(lambda: self.get_token_in_browser())
+        get_token_btn = QPushButton("🌐 Получить токен в браузере")
+        get_token_btn.clicked.connect(lambda: self.get_token_in_browser(dialog))
         layout.addWidget(get_token_btn)
         
-        # Инструкция
         instruction = QLabel(
+            "📋 Инструкция:\n"
             "1. Нажмите кнопку для получения токена\n"
-            "2. Выберите 'Разрешить' в браузере\n"
+            "2. Войдите в VK и разрешите доступ\n"
             "3. Скопируйте токен из адресной строки\n"
-            "4. Вставьте его в поле и нажмите 'Войти'"
+            "4. Вставьте его в поле и нажмите 'Войти'\n\n"
+            "⚠️ Токен привязывается к вашему IP!"
         )
-        instruction.setStyleSheet("color: #a8a8b8; font-size: 12px;")
+        instruction.setStyleSheet("color: #a8a8b8; font-size: 12px; padding: 10px; background-color: #16213e; border-radius: 5px;")
         layout.addWidget(instruction)
         
-        # Кнопка входа
+        debug_label = QLabel("🔍 Отладочная информация:")
+        debug_label.setStyleSheet("color: #a8a8b8; font-size: 12px; margin-top: 10px;")
+        layout.addWidget(debug_label)
+        
+        debug_text = QTextEdit()
+        debug_text.setMaximumHeight(100)
+        debug_text.setReadOnly(True)
+        debug_text.setPlainText("Готов к авторизации...")
+        layout.addWidget(debug_text)
+        
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton("Отмена")
-        cancel_btn.clicked.connect(auth_dialog.reject)
+        cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
         
-        login_btn = QPushButton("Войти")
-        login_btn.clicked.connect(lambda: self.process_token_input(token_input.text(), auth_dialog))
+        login_btn = QPushButton("✅ Войти")
+        login_btn.clicked.connect(lambda: self.process_token_input(token_input.text(), dialog, debug_text))
         btn_layout.addWidget(login_btn)
         
         layout.addLayout(btn_layout)
-        
-        auth_dialog.exec()
+        dialog.exec()
     
-    def get_token_in_browser(self):
+    def get_token_in_browser(self, dialog):
         """Открывает страницу для получения токена"""
-        # URL для OAuth авторизации
-        redirect_uri = "https://oauth.vk.com/blank.html"
-        scope = "audio"  # Права на музыку
-        url = f"https://oauth.vk.com/authorize?client_id={self.app_id}&display=page&redirect_uri={redirect_uri}&scope={scope}&response_type=token&v=5.131"
+        scope = "audio,offline"
+        url = f"https://oauth.vk.com/authorize?client_id={self.app_id}&display=page&redirect_uri={self.redirect_uri}&scope={scope}&response_type=token&v=5.131"
         
         webbrowser.open(url)
         
         QMessageBox.information(
-            self,
-            "Инструкция",
+            dialog,
+            "Инструкция по получению токена",
             "1. В браузере откроется страница VK\n"
             "2. Нажмите 'Разрешить'\n"
             "3. Из адресной строки скопируйте часть после 'access_token='\n"
             "   (до '&expires_in')\n"
-            "4. Вставьте скопированный токен в поле"
+            "4. Вставьте скопированный токен в поле\n\n"
+            "⚠️ ВАЖНО: Токен будет привязан к текущему IP!"
         )
     
-    def process_token_input(self, token, dialog):
+    def process_token_input(self, token, dialog, debug_text):
         """Обработка введенного токена"""
         if not token:
+            debug_text.append("❌ Ошибка: токен не введен")
             QMessageBox.warning(self, "Ошибка", "Введите токен доступа")
             return
         
-        # Сохраняем токен
+        debug_text.append(f"📝 Получен токен: {token[:30]}...")
+        debug_text.append(f"📏 Длина токена: {len(token)} символов")
+        
+        if not token.startswith('vk1.a.'):
+            debug_text.append("⚠️ Токен не начинается с 'vk1.a.'")
+            QMessageBox.warning(self, "Неверный формат", 
+                "Токен должен начинаться с 'vk1.a.'")
+            return
+        
         self.token = token
-        self.save_token(token)
         
         try:
+            debug_text.append("🔄 Создание сессии VK...")
             self.vk_session = vk_api.VkApi(token=token)
             self.vk_api = self.vk_session.get_api()
+            debug_text.append("✅ Сессия создана")
             
-            # Проверяем токен
+            debug_text.append("🔄 Проверка токена...")
             user_info = self.vk_api.users.get()
-            if user_info:
-                self.status_label.setText(f"Авторизован: {user_info[0]['first_name']} {user_info[0]['last_name']}")
+            
+            if user_info and len(user_info) > 0:
+                user_name = f"{user_info[0]['first_name']} {user_info[0]['last_name']}"
+                self.user_id = user_info[0]['id']
+                debug_text.append(f"✅ Авторизация успешна: {user_name} (ID: {self.user_id})")
+                
+                self.save_token(token, self.user_id)
+                
+                self.status_label.setText(f"Авторизован: {user_name}")
                 self.status_label.setStyleSheet("color: #4ecdc4;")
                 self.login_btn.setText("Выйти")
-                self.refresh_btn.setEnabled(True)
+                self.load_all_btn.setEnabled(True)
+                self.load_btn.setEnabled(True)
                 dialog.accept()
-                self.load_playlists()
+                
+                self.load_all_tracks()
+                self.load_playlists_list()
+                
+                QMessageBox.information(self, "Успех", f"Добро пожаловать, {user_name}!")
             else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось получить данные пользователя. Проверьте токен.")
+                debug_text.append("❌ Не получены данные пользователя")
+                QMessageBox.warning(self, "Ошибка", "Не удалось получить данные пользователя")
+                
+        except vk_api.exceptions.ApiError as e:
+            error_msg = str(e)
+            debug_text.append(f"❌ API ошибка: {error_msg}")
+            
+            if "another ip address" in error_msg.lower():
+                QMessageBox.critical(self, "Ошибка IP", 
+                    "Токен привязан к другому IP-адресу!\n\n"
+                    "Получите новый токен с этого компьютера.")
+            else:
+                QMessageBox.critical(self, "Ошибка API", f"Ошибка:\n{error_msg[:300]}")
+                
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Ошибка авторизации: {str(e)}")
+            debug_text.append(f"❌ Неизвестная ошибка: {e}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка:\n{str(e)[:300]}")
     
-    def load_playlists(self):
-        """Загрузка плейлистов пользователя"""
+    def load_all_tracks(self):
+        """Загрузка ВСЕХ аудиозаписей пользователя с пагинацией"""
         if not self.vk_api:
             return
         
         try:
             self.music_list.clear()
             self.current_playlist = []
+            self.playlist_type = "my"
+            self.total_tracks_loaded = 0
             
-            # Получаем аудиозаписи пользователя
-            audio = self.vk_api.audio.get(count=100)
+            offset = 0
+            count = 200
+            max_tracks = 2000
             
-            for item in audio['items']:
-                if 'title' in item and 'artist' in item and 'url' in item:
-                    track_info = {
-                        'title': item['title'],
-                        'artist': item['artist'],
-                        'duration': item.get('duration', 0),
-                        'url': item['url'],
-                        'id': item.get('id', 0)
-                    }
-                    self.current_playlist.append(track_info)
-                    
-                    duration_str = self.format_duration(track_info['duration'])
-                    display_text = f"{track_info['artist']} - {track_info['title']} [{duration_str}]"
-                    self.music_list.addItem(display_text)
+            self.status_label.setText("Загрузка треков...")
+            self.tracks_count_label.setText("Загружается...")
             
-            if self.current_playlist:
-                self.status_label.setText(f"Загружено треков: {len(self.current_playlist)}")
+            while self.total_tracks_loaded < max_tracks:
+                self.log_message(f"Загрузка треков с offset={offset}")
+                
+                audio = self.vk_api.audio.get(
+                    owner_id=self.user_id,
+                    offset=offset,
+                    count=count
+                )
+                
+                items = audio.get('items', [])
+                
+                if not items:
+                    self.log_message("Треки закончились")
+                    break
+                
+                for item in items:
+                    if 'title' in item and 'artist' in item and 'url' in item:
+                        track_info = {
+                            'title': item['title'],
+                            'artist': item['artist'],
+                            'duration': item.get('duration', 0),
+                            'url': item['url'],
+                            'id': item.get('id', 0)
+                        }
+                        self.current_playlist.append(track_info)
+                        self.total_tracks_loaded += 1
+                        
+                        duration_str = self.format_duration(track_info['duration'])
+                        display_text = f"{track_info['artist']} - {track_info['title']} [{duration_str}]"
+                        self.music_list.addItem(display_text)
+                        
+                        if self.total_tracks_loaded % 50 == 0:
+                            self.tracks_count_label.setText(f"Загружено: {self.total_tracks_loaded}")
+                            QApplication.processEvents()
+                
+                self.log_message(f"Загружено {len(items)} треков, всего {self.total_tracks_loaded}")
+                
+                if len(items) < count:
+                    self.log_message("Достигнут конец списка")
+                    break
+                
+                offset += count
+            
+            self.tracks_count_label.setText(f"Всего треков: {len(self.current_playlist)}")
+            self.status_label.setText(f"Загружено треков: {len(self.current_playlist)}")
+            
+            if len(self.current_playlist) == 0:
+                self.music_list.addItem("🎵 У вас нет аудиозаписей")
+            
+            self.log_message(f"Загрузка завершена. Всего треков: {len(self.current_playlist)}")
             
         except Exception as e:
-            QMessageBox.warning(self, "Предупреждение", f"Не удалось загрузить плейлисты: {str(e)}")
+            self.log_message(f"Ошибка загрузки треков: {e}")
+            QMessageBox.warning(self, "Предупреждение", f"Не удалось загрузить все треки: {str(e)}\n\nЗагружено: {len(self.current_playlist)} треков")
+    
+    def load_more_tracks(self):
+        self.load_all_tracks()
+    
+    def load_playlists_list(self):
+        """Загрузка списка плейлистов пользователя"""
+        if not self.vk_api or not self.user_id:
+            self.log_message("Нет API или user_id для загрузки плейлистов")
+            return
+        
+        try:
+            self.playlists_list.clear()
+            self.playlists = []
+            
+            self.log_message(f"Загрузка плейлистов для user_id={self.user_id}")
+            
+            playlists = self.vk_api.audio.getPlaylists(
+                owner_id=self.user_id,
+                count=100
+            )
+            
+            self.log_message(f"Получено плейлистов: {len(playlists.get('items', []))}")
+            
+            for playlist in playlists.get('items', []):
+                playlist_info = {
+                    'id': playlist['id'],
+                    'owner_id': playlist['owner_id'],
+                    'title': playlist['title'],
+                    'count': playlist.get('count', 0),
+                    'description': playlist.get('description', '')
+                }
+                self.playlists.append(playlist_info)
+                
+                display_text = f"📁 {playlist_info['title']} ({playlist_info['count']} треков)"
+                self.playlists_list.addItem(display_text)
+            
+            if not self.playlists:
+                self.playlists_list.addItem("Нет созданных плейлистов")
+                self.log_message("Плейлисты не найдены")
+            
+        except Exception as e:
+            self.log_message(f"Ошибка загрузки плейлистов: {e}")
+            self.playlists_list.addItem(f"❌ Ошибка загрузки плейлистов")
+    
+    def load_playlist_tracks(self, item):
+        """Загрузка треков выбранного плейлиста (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
+        index = self.playlists_list.row(item)
+        if index < 0 or index >= len(self.playlists):
+            return
+        
+        playlist = self.playlists[index]
+        
+        try:
+            self.playlist_tracks_list.clear()
+            self.current_playlist = []
+            self.playlist_type = "playlist"
+            self.current_playlist_id = playlist['id']
+            
+            self.log_message(f"Загрузка плейлиста: {playlist['title']} (ID: {playlist['id']}, Owner: {playlist['owner_id']})")
+            
+            # ПРОБЛЕМА: audio.getPlaylistById НЕ ВОЗВРАЩАЕТ треки!
+            # Нужно использовать другой метод: audio.get с параметром playlist_id
+            
+            # Вариант 1: Пытаемся получить треки через audio.get с playlist_id
+            try:
+                self.log_message("Попытка получить треки через audio.get с playlist_id...")
+                
+                tracks_data = self.vk_api.audio.get(
+                    owner_id=playlist['owner_id'],
+                    playlist_id=playlist['id'],
+                    count=200
+                )
+                
+                items = tracks_data.get('items', [])
+                self.log_message(f"Получено {len(items)} треков через audio.get")
+                
+                if items:
+                    self._add_tracks_to_playlist(items)
+                    self.log_message(f"✅ Загружено {len(self.current_playlist)} треков через audio.get")
+            except Exception as e:
+                self.log_message(f"Метод audio.get с playlist_id не сработал: {e}")
+            
+            # Вариант 2: Если не сработало, пробуем получить через execute
+            if len(self.current_playlist) == 0:
+                try:
+                    self.log_message("Попытка получить треки через execute...")
+                    
+                    code = f"""
+                    var playlist = API.audio.getPlaylistById({{
+                        owner_id: {playlist['owner_id']},
+                        playlist_id: {playlist['id']}
+                    }});
+                    
+                    var tracks = [];
+                    var i = 0;
+                    while (i < 200 && i < playlist.count) {{
+                        var track = playlist.tracks[i];
+                        if (track != null) {{
+                            tracks.push(track);
+                        }}
+                        i = i + 1;
+                    }}
+                    
+                    return {{
+                        tracks: tracks,
+                        count: playlist.count
+                    }};
+                    """
+                    
+                    result = self.vk_api.execute(code=code)
+                    self.log_message(f"Результат execute: {list(result.keys()) if result else 'Нет данных'}")
+                    
+                    if result and 'tracks' in result:
+                        items = result['tracks']
+                        self.log_message(f"Получено {len(items)} треков через execute")
+                        
+                        if items:
+                            self._add_tracks_to_playlist(items)
+                            self.log_message(f"✅ Загружено {len(self.current_playlist)} треков через execute")
+                except Exception as e:
+                    self.log_message(f"Метод execute не сработал: {e}")
+            
+            # Вариант 3: Если execute не работает, пробуем через audio.get без playlist_id
+            if len(self.current_playlist) == 0:
+                try:
+                    self.log_message("Попытка получить треки через audio.get без playlist_id...")
+                    
+                    # Пробуем получить все аудиозаписи пользователя
+                    all_tracks = self.vk_api.audio.get(
+                        owner_id=self.user_id,
+                        count=600
+                    )
+                    
+                    # Фильтруем по плейлисту (если треки содержат информацию о плейлисте)
+                    items = []
+                    for track in all_tracks.get('items', []):
+                        if 'playlist_id' in track and track['playlist_id'] == playlist['id']:
+                            items.append(track)
+                        # Или если есть другой признак принадлежности к плейлисту
+                        elif 'playlist' in track and track['playlist'].get('id') == playlist['id']:
+                            items.append(track)
+                    
+                    self.log_message(f"Найдено {len(items)} треков через фильтрацию всех аудиозаписей")
+                    
+                    if items:
+                        self._add_tracks_to_playlist(items)
+                        self.log_message(f"✅ Загружено {len(self.current_playlist)} треков через фильтрацию")
+                except Exception as e:
+                    self.log_message(f"Метод фильтрации не сработал: {e}")
+            
+            # Обновляем информацию
+            track_count = len(self.current_playlist)
+            self.playlist_tracks_label.setText(f"Плейлист: {playlist['title']} ({track_count} треков)")
+            self.status_label.setText(f"Загружено треков из плейлиста: {track_count}")
+            
+            if track_count == 0:
+                self.playlist_tracks_list.addItem("❌ Не удалось загрузить треки из этого плейлиста")
+                self.playlist_tracks_list.addItem("💡 Попробуйте обновить плейлисты и повторить")
+                self.playlist_tracks_list.addItem("💡 Или откройте другой плейлист")
+                self.log_message("Не удалось загрузить треки плейлиста")
+            
+        except Exception as e:
+            self.log_message(f"Ошибка загрузки треков плейлиста: {e}")
+            self.playlist_tracks_list.addItem(f"❌ Ошибка: {str(e)[:100]}")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить треки плейлиста: {str(e)}")
+    
+    def _add_tracks_to_playlist(self, items):
+        """Вспомогательный метод для добавления треков в плейлист"""
+        for track in items:
+            # Пробуем извлечь данные трека из разных структур
+            title = track.get('title', '')
+            artist = track.get('artist', '')
+            url = track.get('url', '')
+            duration = track.get('duration', 0)
+            track_id = track.get('id', 0)
+            
+            # Если это вложенная структура с track
+            if not title and 'track' in track:
+                track_data = track['track']
+                title = track_data.get('title', '')
+                artist = track_data.get('artist', '')
+                url = track_data.get('url', '')
+                duration = track_data.get('duration', 0)
+                track_id = track_data.get('id', 0)
+            
+            # Если это вложенная структура с audio
+            elif not title and 'audio' in track:
+                track_data = track['audio']
+                title = track_data.get('title', '')
+                artist = track_data.get('artist', '')
+                url = track_data.get('url', '')
+                duration = track_data.get('duration', 0)
+                track_id = track_data.get('id', 0)
+            
+            # Если есть только данные без обертки
+            elif not title and 'title' in track:
+                title = track.get('title', '')
+                artist = track.get('artist', '')
+                url = track.get('url', '')
+                duration = track.get('duration', 0)
+                track_id = track.get('id', 0)
+            
+            # Проверяем, что у нас есть валидные данные
+            if title and artist and url:
+                track_info = {
+                    'title': title,
+                    'artist': artist,
+                    'duration': duration,
+                    'url': url,
+                    'id': track_id
+                }
+                self.current_playlist.append(track_info)
+                
+                duration_str = self.format_duration(duration)
+                display_text = f"{artist} - {title} [{duration_str}]"
+                self.playlist_tracks_list.addItem(display_text)
+                self.log_message(f"Добавлен трек: {artist} - {title}")
     
     def search_music(self):
         """Поиск музыки"""
@@ -421,17 +884,19 @@ class VKMusicPlayer(QMainWindow):
         
         query = self.search_input.text().strip()
         if not query:
-            self.load_playlists()
+            QMessageBox.warning(self, "Ошибка", "Введите запрос для поиска")
             return
         
         try:
-            self.music_list.clear()
+            self.search_results.clear()
             self.current_playlist = []
+            self.playlist_type = "search"
             
-            # Поиск аудиозаписей
-            result = self.vk_api.audio.search(q=query, count=100)
+            self.log_message(f"Поиск: {query}")
             
-            for item in result['items']:
+            result = self.vk_api.audio.search(q=query, count=200)
+            
+            for item in result.get('items', []):
                 if 'title' in item and 'artist' in item and 'url' in item:
                     track_info = {
                         'title': item['title'],
@@ -444,29 +909,39 @@ class VKMusicPlayer(QMainWindow):
                     
                     duration_str = self.format_duration(track_info['duration'])
                     display_text = f"{track_info['artist']} - {track_info['title']} [{duration_str}]"
-                    self.music_list.addItem(display_text)
+                    self.search_results.addItem(display_text)
             
+            self.search_count_label.setText(f"Найдено треков: {len(self.current_playlist)}")
             self.status_label.setText(f"Найдено треков: {len(self.current_playlist)}")
             
+            if len(self.current_playlist) == 0:
+                self.search_results.addItem("Ничего не найдено")
+            
         except Exception as e:
+            self.log_message(f"Ошибка поиска: {e}")
             QMessageBox.warning(self, "Ошибка", f"Не удалось выполнить поиск: {str(e)}")
     
     def play_selected(self, item):
-        """Воспроизведение выбранного трека"""
-        index = self.music_list.row(item)
+        self.play_selected_from_list(item, self.music_list)
+    
+    def play_selected_from_playlist(self, item):
+        self.play_selected_from_list(item, self.playlist_tracks_list)
+    
+    def play_selected_from_search(self, item):
+        self.play_selected_from_list(item, self.search_results)
+    
+    def play_selected_from_list(self, item, list_widget):
+        index = list_widget.row(item)
         if 0 <= index < len(self.current_playlist):
             self.current_index = index
             self.play_track(index)
     
     def play_track(self, index):
-        """Воспроизведение трека по индексу"""
         if 0 <= index < len(self.current_playlist):
             track = self.current_playlist[index]
             
-            # Обновляем информацию
             self.track_info.setText(f"🎵 {track['artist']} - {track['title']}")
             
-            # Загружаем и воспроизводим
             self.player.setSource(QUrl(track['url']))
             self.player.play()
             self.is_playing = True
@@ -475,14 +950,17 @@ class VKMusicPlayer(QMainWindow):
             self.prev_btn.setEnabled(True)
             self.next_btn.setEnabled(True)
             
-            # Выделяем трек в списке
-            self.music_list.setCurrentRow(index)
+            current_tab = self.tabs.currentIndex()
+            if current_tab == 0 and hasattr(self, 'music_list'):
+                self.music_list.setCurrentRow(index)
+            elif current_tab == 1 and hasattr(self, 'playlist_tracks_list'):
+                self.playlist_tracks_list.setCurrentRow(index)
+            elif current_tab == 2 and hasattr(self, 'search_results'):
+                self.search_results.setCurrentRow(index)
             
-            # Запускаем таймер обновления
             self.timer.start(1000)
     
     def toggle_play(self):
-        """Воспроизведение/Пауза"""
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self.play_btn.setText("▶")
@@ -493,19 +971,16 @@ class VKMusicPlayer(QMainWindow):
             self.is_playing = True
     
     def play_next(self):
-        """Следующий трек"""
         if self.current_index < len(self.current_playlist) - 1:
             self.current_index += 1
             self.play_track(self.current_index)
     
     def play_previous(self):
-        """Предыдущий трек"""
         if self.current_index > 0:
             self.current_index -= 1
             self.play_track(self.current_index)
     
     def format_duration(self, seconds):
-        """Форматирование длительности"""
         if not seconds:
             return "0:00"
         minutes = seconds // 60
@@ -513,14 +988,12 @@ class VKMusicPlayer(QMainWindow):
         return f"{minutes}:{seconds:02d}"
     
     def position_changed(self, position):
-        """Обновление позиции воспроизведения"""
         duration = self.player.duration()
         if duration > 0:
             progress = int((position / duration) * 100)
             self.progress_bar.setValue(progress)
     
     def update_progress(self):
-        """Обновление прогресса"""
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             position = self.player.position()
             duration = self.player.duration()
@@ -529,18 +1002,80 @@ class VKMusicPlayer(QMainWindow):
                 self.progress_bar.setValue(progress)
     
     def playback_state_changed(self, state):
-        """Обработка изменения состояния воспроизведения"""
         if state == QMediaPlayer.PlaybackState.StoppedState:
             self.is_playing = False
             self.play_btn.setText("▶")
             self.timer.stop()
-            # Автоматическое воспроизведение следующего трека
             if self.current_index < len(self.current_playlist) - 1:
                 self.play_next()
     
     def change_volume(self, value):
-        """Изменение громкости"""
         self.audio_output.setVolume(value / 100)
+    
+    def log_message(self, message):
+        if self.debug_mode:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] {message}")
+    
+    def show_debug_info(self):
+        try:
+            current_ip = requests.get('https://api.ipify.org', timeout=5).text
+        except:
+            current_ip = "Не удалось определить"
+        
+        info = f"""🐛 Отладочная информация:
+
+🌐 Текущий IP: {current_ip}
+
+👤 User ID: {self.user_id}
+🔑 Токен: {'Есть' if self.token else 'Нет'}
+📏 Длина токена: {len(self.token) if self.token else 0}
+
+🔗 VK Session: {'Активна' if self.vk_session else 'Не активна'}
+📊 VK API: {'Доступен' if self.vk_api else 'Не доступен'}
+
+📂 Текущий плейлист: {len(self.current_playlist)} треков
+🎵 Текущий индекс: {self.current_index}
+▶️ Воспроизведение: {'Да' if self.is_playing else 'Нет'}
+
+📁 Загружено плейлистов: {len(self.playlists)}
+💾 Файл токена: {'Существует' if os.path.exists('vk_token.json') else 'Отсутствует'}
+"""
+        QMessageBox.information(self, "Отладка", info)
+    
+    def logout(self):
+        self.token = None
+        self.vk_session = None
+        self.vk_api = None
+        self.user_id = None
+        self.current_playlist = []
+        self.current_index = -1
+        self.playlists = []
+        
+        self.status_label.setText("Не авторизован")
+        self.status_label.setStyleSheet("color: #ff6b6b;")
+        self.login_btn.setText("Войти в VK")
+        self.load_all_btn.setEnabled(False)
+        self.load_btn.setEnabled(False)
+        
+        self.music_list.clear()
+        self.playlists_list.clear()
+        self.playlist_tracks_list.clear()
+        self.search_results.clear()
+        
+        self.play_btn.setEnabled(False)
+        self.prev_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        self.track_info.setText("Нет выбранного трека")
+        
+        self.tracks_count_label.setText("Всего треков: 0")
+        self.playlist_tracks_label.setText("Выберите плейлист")
+        self.search_count_label.setText("Найдено треков: 0")
+        
+        try:
+            os.remove('vk_token.json')
+        except:
+            pass
 
 def main():
     app = QApplication(sys.argv)
